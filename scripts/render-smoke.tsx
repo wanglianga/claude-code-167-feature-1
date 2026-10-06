@@ -65,5 +65,29 @@ const id = useStore.getState().createVisit({
 const full = renderAt(`/visit/${id}`)
 assert(full.includes('手语'), '全需求详情含手语')
 assert(full.includes('馆区无障碍平面图'), '详情含馆区平面图')
+
+// —— 参观中电梯故障：观众端看到重算面板（失效原因/延误/推行/收益/三选一）——
+const zid = useStore.getState().visits.find((v) => v.party.contactName === '张女士').id
+useStore.getState().setGlobalSignals({ elevatorsDown: ['el1'] }, '渲染演练：1号客梯故障')
+const rer = renderAt(`/visit/${zid}`)
+assert(rer.includes('路线已重新计算'), '观众端展示电梯故障重算面板')
+assert(rer.includes('为什么路线变了'), '展示失效原因')
+assert(rer.includes('预计整体延误'), '展示预计延误时间')
+assert(rer.includes('工作人员推行'), '展示是否需要工作人员推行')
+assert(rer.includes('保留重点展厅'), '展示保留重点展厅指标')
+assert(rer.includes('参观收益'), '展示新的参观收益')
+assert(rer.includes('调整参观顺序') && rer.includes('改期再来') && rer.includes('取消本次讲解'), '提供调整顺序/改期/取消讲解三选一')
+assert(rer.includes('接续前已参观') || rer.includes('路线接续'), '已完成展厅作为成果保留/展示接续路线')
+
+// 服务台端同样可见处置面板，并可推进进度
+const opsRer = renderAt('/ops')
+assert(opsRer.includes('路线已重新计算'), '服务台工作台嵌入重算处置面板')
+assert(opsRer.includes('参观进度与当前位置'), '服务台可推进已完成展厅/校正当前位置')
+
+// 观众做出选择后，页面展示已留存的处置结果
+useStore.getState().resolveReroute(zid, 'reorder')
+const resolved = renderAt(`/visit/${zid}`)
+assert(resolved.includes('路线变更处置结果') && resolved.includes('服务台已留存'), '处置后展示留存结果')
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`)
 if (fail) process.exit(1)

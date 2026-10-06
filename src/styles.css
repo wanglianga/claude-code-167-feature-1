@@ -152,6 +152,7 @@ textarea { min-height: 74px; resize: vertical; }
 .status-visiting { background: var(--green-soft); color: var(--green); border-color: #bfe0ca; }
 .status-completed { background: var(--surface-2); color: var(--ink-2); }
 .status-cancelled { background: var(--red-soft); color: var(--red); border-color: #efc5be; }
+.status-rescheduled { background: var(--amber-soft); color: var(--amber); border-color: #ecd9a8; }
 
 /* —— 提示条 —— */
 .notice {
@@ -290,6 +291,30 @@ textarea { min-height: 74px; resize: vertical; }
 .toast-note { font-size: .82rem; color: var(--ink-2); margin-top: 6px; }
 .divider { border: none; border-top: 1px dashed var(--line); margin: 12px 0; }
 .phone-frame-note { display: none; }
+
+/* —— 电梯故障路线重算面板 —— */
+.reroute-card { border-color: #efc5be; box-shadow: 0 4px 18px rgba(180, 55, 42, 0.10); }
+.reroute-card.resolved { border-color: #bfe0ca; box-shadow: 0 4px 18px rgba(46, 125, 67, 0.10); }
+.benefit-list { margin: 6px 0 0; padding-left: 0; list-style: none; }
+.benefit-list li {
+  position: relative; padding: 7px 10px 7px 34px; margin-bottom: 6px;
+  background: var(--green-soft); border: 1px solid #bfe0ca; border-radius: 10px;
+  color: #20552f; font-size: 0.88rem;
+}
+.benefit-list li::before {
+  content: "🎁"; position: absolute; left: 9px; top: 7px; font-size: 0.95rem;
+}
+.choice-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 760px) { .choice-grid { grid-template-columns: 1fr; } }
+.choice-tile {
+  border: 1.5px solid var(--line); border-radius: 12px; padding: 12px; background: #fff;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.choice-tile .t { font-weight: 700; font-size: 0.95rem; color: var(--brand-dark); }
+.choice-tile .d { font-size: 0.82rem; color: var(--ink-2); flex: 1; }
+.choice-tile.disabled { opacity: .65; }
+.eta-card.done { border-left-color: var(--green); background: var(--green-soft); opacity: .92; }
+
 @media (max-width: 560px) {
   .card { padding: 15px; }
   .hero { padding: 20px 18px; }

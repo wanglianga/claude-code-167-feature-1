@@ -10,7 +10,8 @@ const STATUS_TEXT: Record<VisitStatus, string> = {
   checked_in: '已入馆',
   visiting: '参观中',
   completed: '已完成',
-  cancelled: '已取消'
+  cancelled: '已取消',
+  rescheduled: '已改期'
 }
 
 export function StatusBadge({ status }: { status: VisitStatus }) {

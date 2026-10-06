@@ -1,10 +1,11 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useStore } from '../store'
-import { STAFF, HALLS, ELEVATORS, TOTAL_WHEELCHAIRS, TOTAL_PARKING } from '../data/museum'
+import { STAFF, HALLS, ELEVATORS, NODES, TOTAL_WHEELCHAIRS, TOTAL_PARKING } from '../data/museum'
 import { crowdLabel, parkingAvailable, wheelchairAvailable } from '../lib/planner'
 import type { LiveSignals } from '../lib/planner'
 import MuseumMap from '../components/MuseumMap'
+import ReroutePanel from '../components/ReroutePanel'
 import { Badge, Notice, StatusBadge } from '../components/ui'
 import { fmtMin, prettyDate, todayISO, weekdayCN } from '../utils'
 
@@ -57,11 +58,13 @@ export default function OpsPage() {
 
   // —— 今日接应任务看板：展厅工作人员视角 ——
   const etaBoard = todays
-    .filter((v) => v.status !== 'cancelled' && v.route)
+    .filter((v) => v.status !== 'cancelled' && v.status !== 'rescheduled' && v.route)
     .flatMap((v) =>
-      v.route!.stops.map((st) => ({
-        key: v.id + st.hallId, visit: v, hallId: st.hallId, arrive: st.arriveMin, leave: st.leaveMin, crowd: st.crowd, assist: st.assist
-      }))
+      v.route!.stops
+        .filter((st) => !st.done && !(v.visitedHalls ?? []).includes(st.hallId))
+        .map((st) => ({
+          key: v.id + st.hallId, visit: v, hallId: st.hallId, arrive: st.arriveMin, leave: st.leaveMin, crowd: st.crowd, assist: st.assist
+        }))
     )
     .sort((a, b) => a.arrive - b.arrive)
 
@@ -203,6 +206,9 @@ export default function OpsPage() {
         <div>
           {visit && visit.route && (
             <>
+              {(visit.route.reroute || visit.resolution) && visit.status !== 'cancelled' && (
+                <ReroutePanel visit={visit} viewer="desk" />
+              )}
               <div className="card">
                 <div className="flex between">
                   <h2 style={{ margin: 0 }}>服务处置 · <span className="code-pill">{visit.code}</span></h2>
@@ -280,6 +286,36 @@ export default function OpsPage() {
                     {vs?.visitorUnwell ? '⚠ 身体不适处置中（点击解除）' : '➕ 标记观众身体不适'}
                   </button>
                 </div>
+
+                <hr className="divider" />
+                <h3>③⁺ 参观进度与当前位置（用于故障后从当前位置接续重算）</h3>
+                {visit.status === 'visiting' ? (
+                  <>
+                    <div className="flex" style={{ gap: 8, alignItems: 'center' }}>
+                      <span className="small">观众当前位置：</span>
+                      <select style={{ maxWidth: 260 }} value={visit.currentNode ?? ''}
+                        onChange={(e) => e.target.value ? s.setCurrentNode(visit.id, e.target.value) : s.setCurrentNode(visit.id, '')}>
+                        <option value="">按已完成进度自动推断</option>
+                        {NODES.filter((n) => ['desk', 'hall', 'rest', 'elevator'].includes(n.kind)).map((n) => (
+                          <option key={n.id} value={n.id}>{n.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="flex mt8" style={{ gap: 6 }}>
+                      {visit.route.stops.filter((st) => !(visit.visitedHalls ?? []).includes(st.hallId)).map((st) => (
+                        <button key={st.hallId} className="btn sm ghost"
+                          onClick={() => s.markHallVisited(visit.id, st.hallId)}>
+                          ✅ 已看完{HALLS.find((h) => h.id === st.hallId)?.name.split(' · ')[0]}
+                        </button>
+                      ))}
+                      {(visit.visitedHalls?.length ?? 0) > 0 && (
+                        <Badge tone="green">已完成 {visit.visitedHalls!.length} 厅（故障重算时保留）</Badge>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <p className="small muted">点击"开始参观"后，可在此推进已完成展厅并校正当前位置；电梯故障时系统将从该位置接续重算。</p>
+                )}
 
                 <hr className="divider" />
                 <h3>④ 突发协助记录（同步写入该条服务）</h3>

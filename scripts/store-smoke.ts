@@ -85,5 +85,66 @@ assert(v5.events.every((e) => typeof e.text === 'string' && e.ts), `全链路事
 useStore.getState().seedDemo()
 assert(useStore.getState().visits.length === 4, `不重复播种（实际 ${useStore.getState().visits.length}）`)
 
+// —— 到馆参观中电梯故障：接续重算 + 观众决策 + 服务台留存 ——
+{
+  const seed = useStore.getState().visits.find((v) => v.party.contactName === '张女士')!
+  const rid = seed.id
+  assert(seed.status === 'visiting', '演示：张女士已在参观中')
+  assert((seed.visitedHalls ?? []).includes('hA'), '已完成首个展厅（成果基线）')
+  // 复位前面用例可能遗留的故障，建立干净基线
+  useStore.getState().setGlobalSignals({ elevatorsDown: [] }, '演练复位：电梯恢复')
+  const before = useStore.getState().visits.find((v) => v.id === rid)!.route!
+  useStore.getState().setGlobalSignals({ elevatorsDown: ['el1'] }, '到馆演练：1号客梯故障')
+  let rv = useStore.getState().visits.find((v) => v.id === rid)!
+  assert(rv.route!.continuation === true, '到馆后走"从当前位置接续"重算（非从入口重来）')
+  assert(rv.route!.version === before.version + 1, '接续路线版本递增')
+  assert(rv.route!.stops.some((st) => st.hallId === 'hA' && st.done), '已看展厅在新路线中标记完成')
+  assert(!rv.route!.trace.some((t) => t.startsWith('ev1')), '接续轨迹绕行故障电梯')
+  const a = rv.route!.reroute!
+  assert(!!a && a.failedElevators.includes('1号客梯'), '携带故障重算分析')
+  assert(a.reasons.length > 0 && a.benefits.length > 0, '给出失效原因与参观收益')
+  assert(a.needStaffPush === true, '轮椅观众判定需工作人员推行')
+  assert(rv.events.some((e) => e.type === 'reroute_dispatch'), '写入"故障重算已推送"记录')
+
+  // 观众选择：调整参观顺序
+  useStore.getState().resolveReroute(rid, 'reorder')
+  rv = useStore.getState().visits.find((v) => v.id === rid)!
+  assert(rv.resolution?.choice === 'reorder' && rv.status === 'visiting', '观众选择调整顺序，继续参观')
+  assert(rv.events.some((e) => e.type === 'resolution'), '处置选择写入同一条服务记录')
+
+  // 服务台接手留存
+  useStore.getState().deskHandleResolution(rid, '已安排志愿者在2号梯口接力推行，云端讲解已推送')
+  rv = useStore.getState().visits.find((v) => v.id === rid)!
+  assert(rv.resolution?.handledByDesk === true && !!rv.resolution.resultText, '服务台处理结果留存')
+
+  // 又一部电梯故障 → 重置上一轮决策，重新等待选择
+  useStore.getState().setGlobalSignals({ elevatorsDown: ['el1', 'el2'] }, '到馆演练：2号梯也故障')
+  rv = useStore.getState().visits.find((v) => v.id === rid)!
+  assert(!rv.resolution && !!rv.route!.reroute, '新故障重置待决策状态并重新分析')
+  assert(rv.route!.reroute!.onlineSupplement === true, '双梯全停提供线上讲解补充')
+
+  // 观众选择：改期 → 按全新一天重排且权益保留
+  useStore.getState().resolveReroute(rid, 'reschedule', { rescheduleDate: '2026-10-09', rescheduleArrivalMin: 9 * 60 + 30 })
+  rv = useStore.getState().visits.find((v) => v.id === rid)!
+  assert(rv.status === 'rescheduled' && rv.date === '2026-10-09', '改为已改期并更新到馆日期')
+  assert(!rv.route!.reroute && rv.route!.stops.length >= 2, '改期后按电梯恢复的全新一天重排完整路线')
+  assert(rv.resolution?.choice === 'reschedule', '同一条服务保留改期处置结果')
+}
+
+// 另一组参观中观众：选择取消讲解 → 保留自助无障碍路线
+{
+  useStore.getState().setGlobalSignals({ elevatorsDown: [] }, '演练复位：电梯全部恢复')
+  let lv = useStore.getState().visits.find((v) => v.party.contactName === '林先生')!
+  useStore.getState().checkIn(lv.id)
+  useStore.getState().setStatus(lv.id, 'visiting')
+  useStore.getState().setGlobalSignals({ elevatorsDown: ['el2'] }, '到馆演练：2号梯故障')
+  lv = useStore.getState().visits.find((v) => v.id === lv.id)!
+  useStore.getState().resolveReroute(lv.id, 'cancel_guide')
+  lv = useStore.getState().visits.find((v) => v.id === lv.id)!
+  assert(lv.resolution?.choice === 'cancel_guide', '观众选择取消讲解')
+  assert(!lv.route!.escortId && lv.route!.segments.length > 0, '取消陪同但保留无障碍路线')
+  assert(lv.guideCancelled === true, '本次讲解取消状态留存')
+}
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`)
 if (fail) process.exit(1)

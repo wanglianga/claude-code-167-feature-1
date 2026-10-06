@@ -75,7 +75,9 @@ export default function HomePage() {
               {v.route ? `路线 v${v.route.version}：${v.route.stops.length} 个展厅 · 约 ${v.route.totalDistance} 米 · ${fmtMin(v.route.arrivalMin)}–${fmtMin(v.route.endMin)}` : '路线生成中…'}
               {escort && <> · 陪同：{escort.role}{escort.name}</>}
               {openLoan && <> · 已借轮椅 {openLoan.assetCode}</>}
-              {v.route && v.route.version > 1 && <b className="danger-text"> · 已根据现场情况重规划</b>}
+              {v.status === 'rescheduled'
+                ? <b style={{ color: 'var(--amber)' }}> · 已改期，权益保留</b>
+                : v.route && v.route.version > 1 && <b className="danger-text"> · 已根据现场情况重规划</b>}
             </div>
           </Link>
         )

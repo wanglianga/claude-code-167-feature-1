@@ -4,6 +4,7 @@ import { useStore } from '../store'
 import { STAFF } from '../data/museum'
 import MuseumMap from '../components/MuseumMap'
 import RouteTimeline from '../components/RouteTimeline'
+import ReroutePanel from '../components/ReroutePanel'
 import { Badge, Notice, StatusBadge, EmptyHint } from '../components/ui'
 import { prettyDate, weekdayCN, fmtMin } from '../utils'
 import type { EventType } from '../types'
@@ -12,6 +13,7 @@ const EVENT_META: Record<EventType, { label: string; tone?: 'brand' | 'gold' | '
   book: { label: '预约', tone: 'blue' },
   checkin: { label: '入馆核验', tone: 'gold' },
   route_change: { label: '路线调整', tone: 'red' },
+  reroute_dispatch: { label: '故障重算', tone: 'red' },
   wheelchair_loan: { label: '轮椅借出', tone: 'brand' },
   wheelchair_return: { label: '轮椅归还', tone: 'brand' },
   escort_assign: { label: '陪同安排', tone: 'green' },
@@ -19,7 +21,8 @@ const EVENT_META: Record<EventType, { label: string; tone?: 'brand' | 'gold' | '
   assist: { label: '现场协助', tone: 'gold' },
   incident: { label: '突发情况', tone: 'red' },
   complete: { label: '参观结束', tone: 'brand' },
-  note: { label: '服务记录', tone: 'amber' }
+  note: { label: '服务记录', tone: 'amber' },
+  resolution: { label: '处置留存', tone: 'green' }
 }
 
 function ServiceLog({ visitId }: { visitId: string }) {
@@ -106,10 +109,15 @@ export default function VisitDetailPage() {
         {visit.route?.escortIssue && <Notice kind="warn">陪同排班提示：{visit.route.escortIssue}</Notice>}
         {visit.route?.wheelchairIssue && <Notice kind="warn">设备提示：{visit.route.wheelchairIssue}</Notice>}
         {visit.route?.parkingIssue && <Notice kind="warn">车位提示：{visit.route.parkingIssue}</Notice>}
-        {planChanged && visit.status !== 'cancelled' && visit.status !== 'completed' && (
+        {planChanged && visit.status !== 'cancelled' && visit.status !== 'completed' && visit.status !== 'rescheduled' && (
           <Notice kind="info">现场情况（电梯、闭馆、拥挤、排班）较预约时发生变化，当前展示的路线已由调度台按最新情况重新核算。</Notice>
         )}
       </div>
+
+      {/* 电梯故障后的到馆接续重算：失效原因 / 延误 / 推行 / 替代展区 / 线上讲解 / 收益与三选一 */}
+      {(visit.route?.reroute || visit.resolution) && visit.status !== 'cancelled' && (
+        <ReroutePanel visit={visit} viewer="visitor" />
+      )}
 
       {visit.status === 'booked' && (
         <div className="card">

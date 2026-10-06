@@ -31,6 +31,12 @@ export default function RouteTimeline({ plan }: { plan: RoutePlan }) {
         全程约 <b>{fmtDist(plan.totalDistance)}</b> · 步行/移动约 {plan.totalWalkMin} 分钟 · 含观展共 {plan.totalMin} 分钟
       </p>
 
+      {plan.continuation && (
+        <Notice kind="info">
+          本版为到馆后的<b>接续路线</b>：从「{plan.continuationNodeName ?? '当前位置'}」继续，
+          {plan.completedStops?.length ? `已完成的 ${plan.completedStops.length} 个展厅照常保留，` : ''}仅重排剩余参观。
+        </Notice>
+      )}
       {plan.reduced && <Notice kind="warn">因观众身体不适，本版路线已缩减展厅数量并加密休息点，工作人员将全程关注状态。</Notice>}
 
       <div className="timeline mt12">
@@ -75,10 +81,10 @@ export default function RouteTimeline({ plan }: { plan: RoutePlan }) {
             const c = crowdLabel(st.crowd)
             const color = c.tone === 'bad' ? '#b4372a' : c.tone === 'warn' ? '#b07a1c' : '#2e7d43'
             return (
-              <div key={st.hallId} className="eta-card">
+              <div key={st.hallId} className={`eta-card ${st.done ? 'done' : ''}`}>
                 <div className="flex between">
-                  <span className="t">{h.name}</span>
-                  <span className="small">预计到达 <b style={{ fontSize: '1rem' }}>{fmtMin(st.arriveMin)}</b>（{fmtRange(st.arriveMin, st.leaveMin)}）</span>
+                  <span className="t">{h.name}{st.done && <Badge tone="green">✅ 接续前已参观</Badge>}</span>
+                  <span className="small">{st.done ? '已完成 ' : '预计到达 '}<b style={{ fontSize: '1rem' }}>{fmtMin(st.arriveMin)}</b>（{fmtRange(st.arriveMin, st.leaveMin)}）</span>
                 </div>
                 <div className="flex mt8 small muted" style={{ gap: 12 }}>
                   <span className="flex" style={{ gap: 6 }}>
@@ -87,7 +93,7 @@ export default function RouteTimeline({ plan }: { plan: RoutePlan }) {
                     {Math.round(st.crowd * 100)}% · {c.text}
                   </span>
                 </div>
-                <div className="seg-assist mt8">🤝 {st.assist}</div>
+                {!st.done && <div className="seg-assist mt8">🤝 {st.assist}</div>}
               </div>
             )
           })}
