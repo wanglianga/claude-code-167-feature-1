@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useStore, emptyParty } from '../store'
 import { planRoute, wheelchairAvailable, parkingAvailable } from '../lib/planner'
-import { STAFF, TOTAL_WHEELCHAIRS, TOTAL_PARKING } from '../data/museum'
+import { STAFF, HALLS, TOTAL_WHEELCHAIRS, TOTAL_PARKING } from '../data/museum'
 import type { PartyProfile } from '../types'
 import { fmtDist, fmtMin, hhmmToMin, todayISO } from '../utils'
 import { Badge, Notice } from '../components/ui'
@@ -110,6 +110,23 @@ export default function BookPage() {
           desc="车位位于 B1 临近电梯；约满时安排正门落客与志愿者代泊车指引" />
         <Toggle checked={!party.canStandLong} onChange={(v) => set('canStandLong', !v)}
           title="🪑 不能长时间站立 / 行走" desc="路线按低体力节奏生成：缩短步行、每段之间安排座椅休息" />
+
+        <div className="field mt12">
+          <label>本次最想看的重点展厅 <span className="hint">（可多选；现场电梯故障时优先保留这些展厅与展品，并重排参观顺序）</span></label>
+          <div className="badges">
+            {HALLS.map((h) => {
+              const on = party.preferredHallIds?.includes(h.id)
+              return (
+                <button type="button" key={h.id} className={`chip-btn ${on ? 'on' : ''}`}
+                  onClick={() => set('preferredHallIds',
+                    on ? party.preferredHallIds!.filter((x) => x !== h.id)
+                      : [...(party.preferredHallIds ?? []), h.id])}>
+                  ★ {h.name.split(' · ')[1] ?? h.name}
+                </button>
+              )
+            })}
+          </div>
+        </div>
 
         <button className="btn block mt12" disabled={!valid} onClick={submit}>
           {valid ? '生成可行路线并提交预约' : '请填写姓名与正确的手机号'}

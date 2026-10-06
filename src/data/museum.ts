@@ -85,12 +85,18 @@ export const ELEVATORS: ElevatorInfo[] = [
 ]
 
 export const HALLS: HallInfo[] = [
-  { id: 'hA', name: 'B1 临展厅 A · 青铜特展', theme: '特展', viewMin: 30, popularity: 0.7 },
-  { id: 'hB', name: 'B1 临展厅 B · 丝路特展', theme: '特展', viewMin: 30, popularity: 0.55 },
-  { id: 'hC', name: 'F2 古代陶瓷馆', theme: '古代', viewMin: 35, popularity: 0.8 },
-  { id: 'hD', name: 'F2 古代书画馆', theme: '古代', viewMin: 35, popularity: 0.6 },
-  { id: 'hE', name: 'F3 近代历史馆', theme: '近代', viewMin: 30, popularity: 0.65 },
-  { id: 'hF', name: 'F3 自然探索馆', theme: '自然', viewMin: 25, popularity: 0.9 }
+  { id: 'hA', name: 'B1 临展厅 A · 青铜特展', theme: '特展', viewMin: 30, popularity: 0.7,
+    highlights: ['后母戊鼎（仿铸展示）', '四羊方尊', '青铜编钟组'], onlineCode: 'CLOUD-A' },
+  { id: 'hB', name: 'B1 临展厅 B · 丝路特展', theme: '特展', viewMin: 30, popularity: 0.55,
+    highlights: ['敦煌壁画临摹长卷', '波斯银壶', '丝路商队沙盘'], onlineCode: 'CLOUD-B' },
+  { id: 'hC', name: 'F2 古代陶瓷馆', theme: '古代', viewMin: 35, popularity: 0.8,
+    highlights: ['汝窑天青釉洗', '元青花梅瓶', '唐三彩骆驼'], onlineCode: 'CLOUD-C' },
+  { id: 'hD', name: 'F2 古代书画馆', theme: '古代', viewMin: 35, popularity: 0.6,
+    highlights: ['《清明上河图》摹本', '山水立轴', '书法长卷'], onlineCode: 'CLOUD-D' },
+  { id: 'hE', name: 'F3 近代历史馆', theme: '近代', viewMin: 30, popularity: 0.65,
+    highlights: ['城市开埠照片墙', '近代邮品集', '老上海街景复原'], onlineCode: 'CLOUD-E' },
+  { id: 'hF', name: 'F3 自然探索馆', theme: '自然', viewMin: 25, popularity: 0.9,
+    highlights: ['马门溪龙骨架', '矿物互动墙', '鸟类生态剧场'], onlineCode: 'CLOUD-F' }
 ]
 
 // 轮椅库存（含已借出按预约动态扣减）

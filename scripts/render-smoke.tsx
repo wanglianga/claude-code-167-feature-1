@@ -39,12 +39,13 @@ assert(book.includes('参观日期') && book.includes('参观人数'), '预约�
 assert(book.includes('手语讲解') && book.includes('慢速讲解'), '含手语/慢速讲解选项')
 assert(book.includes('近距离无障碍车位'), '含近距离停车选项')
 assert(book.includes('不能长时间站立'), '含能否长时间站立选项')
+assert(book.includes('最想看的重点展厅'), '预约时可勾选重点展厅（故障后优先保留）')
 assert(book.includes('路线可行性预估'), '填写时实时给出可行性预估')
 
-const ops = renderAt('/ops')
-assert(ops.includes('馆内工作台'), '平板工作台渲染')
-assert(ops.includes('今日接应任务看板'), '展厅工作人员看到接应看板与预计到达时间')
-assert(ops.includes('现场态势与安全调度'), '含电梯/闭馆/拥挤/排班/库存调度')
+const ops0 = renderAt('/ops')
+assert(ops0.includes('馆内工作台'), '平板工作台渲染')
+assert(ops0.includes('今日接应任务看板'), '展厅工作人员看到接应看板与预计到达时间')
+assert(ops0.includes('现场态势与安全调度'), '含电梯/闭馆/拥挤/排班/库存调度')
 
 const someId = useStore.getState().visits[0].id
 const detail = renderAt(`/visit/${someId}`)
@@ -65,5 +66,47 @@ const id = useStore.getState().createVisit({
 const full = renderAt(`/visit/${id}`)
 assert(full.includes('手语'), '全需求详情含手语')
 assert(full.includes('馆区无障碍平面图'), '详情含馆区平面图')
+
+// —— 电梯故障后：观众端重算面板 ——
+useStore.getState().setGlobalSignals(
+  { elevatorsDown: ['el1'], elevatorReasons: { el1: '门机故障，等待配件更换' } },
+  '渲染演练：1 号客梯停用'
+)
+const fault = renderAt(`/visit/${id}`)
+assert(fault.includes('现场路线调整通知'), '故障后展示路线重算面板')
+assert(fault.includes('不是取消服务'), '明确告知不是随意取消服务')
+assert(fault.includes('门机故障'), '展示电梯失效的具体原因')
+assert(fault.includes('预计延误'), '展示预计延误时间')
+assert(fault.includes('工作人员'), '展示是否需要工作人员推行')
+assert(fault.includes('保留的原计划/重点展厅'), '展示重点展厅保留情况')
+assert(fault.includes('步行距离变化'), '展示步行距离变化（缩短/增加）')
+assert(fault.includes('调整后您依然能获得的参观收益'), '展示新参观收益（保留重点展品等）')
+assert(fault.includes('按新顺序继续参观') && fault.includes('改期再来') && fault.includes('改为线上讲解'), '给出调整顺序/改期/取消讲解三种选择')
+
+// 双梯全停：线上讲解补充与受理流程渲染
+useStore.getState().setGlobalSignals({ elevatorsDown: ['el1', 'el2'], elevatorReasons: { el1: '门机故障', el2: '井道进水暂停使用' } }, '渲染演练：双梯停用')
+const both = renderAt(`/visit/${id}`)
+assert(both.includes('线上云讲解'), '无法到达的展厅提供线上云讲解补充')
+assert(both.includes('两部电梯'), '说明双梯停用影响范围')
+
+// 工作台默认选中的第一条今日预约也受故障影响；先让其提交一个待受理选择
+const firstTodayId = useStore.getState().visits.filter((v) => v.date === new Date().toISOString().slice(0, 10))[0]?.id
+if (firstTodayId) useStore.getState().chooseRecovery(firstTodayId, 'reorder')
+const opsFault = renderAt('/ops')
+assert(opsFault.includes('电梯故障处置'), '工作台展示故障处置受理区')
+assert(opsFault.includes('公示原因'), '工作台可设置对观众公示的停用原因')
+assert(opsFault.includes('现场参观进度'), '工作台可标记离厅进度触发续览重算')
+assert(opsFault.includes('确认受理并告知观众'), '观众选择后服务台工作台出现一键受理按钮')
+assert(opsFault.includes('调整参观顺序（按新路线继续）'), '工作台显示观众已做的选择')
+
+// 观众选择取消讲解 → 已决状态与服务台受理渲染
+useStore.getState().chooseRecovery(id, 'cancel_guide')
+const decided = renderAt(`/visit/${id}`)
+assert(decided.includes('您已选择【') && decided.includes('改为线上讲解'), '展示观众已做选择')
+assert(decided.includes('服务台正在受理'), '未受理时提示等待服务台确认')
+useStore.getState().handleRecovery(id, '值班主管')
+const handled = renderAt(`/visit/${id}`)
+assert(handled.includes('值班主管') && handled.includes('受理并确认安排'), '受理后展示受理人与确认状态')
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`)
 if (fail) process.exit(1)

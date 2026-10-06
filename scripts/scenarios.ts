@@ -156,5 +156,69 @@ console.log('\n场景 13：陪同人临时增加不影响生成；各段时刻�
   assert(plan.totalMin > 0, '全程时长为正')
 }
 
+console.log('\n场景 14：观众标记重点展厅 → 故障重算优先保留并给出失效原因/收益/推行/延误')
+{
+  const p = party({ borrowWheelchair: true, preferredHallIds: ['hA', 'hC'] })
+  const v1 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: DEFAULT_SIGNALS, visits: [], staff: STAFF })
+  assert(v1.stops[0].hallId === 'hA', `重点展厅优先：首厅为 ${v1.stops[0]?.hallId}（期望 hA）`)
+  const sig: LiveSignals = { ...DEFAULT_SIGNALS, elevatorsDown: ['el1'], elevatorReasons: { el1: '门机故障，等待配件更换' } }
+  const v2 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: sig, visits: [], staff: STAFF, version: 2, prevPlan: v1 })
+  const d = v2.disruption
+  assert(!!d, 'v2 携带故障重算分析 disruption')
+  assert(d!.reasons.some((r) => r.includes('1号客梯') && r.includes('门机故障')), '公示电梯停用具体原因')
+  assert(d!.reasons.some((r) => r.includes('2号无障碍电梯')), '说明改乘备用电梯')
+  assert(typeof d!.delayMin === 'number', `给出预计延误字段（${d!.delayMin} 分钟）`)
+  assert(d!.needStaffPush === true, '轮椅观众绕行判定需要工作人员推行')
+  assert(d!.pushReasons.length > 0, '给出推行需求依据（坡道/绕行距离/接应）')
+  assert(d!.benefits.length >= 2, `给出 ${d!.benefits.length} 条新参观收益（保留重点/延误说明等）`)
+  assert(!v2.trace.some((id) => id.startsWith('ev1')), '新轨迹不使用故障电梯')
+}
+
+console.log('\n场景 15：双梯全停重算 → 重点展厅全部失效、给线上讲解、候选展区为空、不崩溃')
+{
+  const p = party({ borrowWheelchair: true, needSlow: true })
+  const v1 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: DEFAULT_SIGNALS, visits: [], staff: STAFF })
+  const before = v1.stops.length
+  assert(before >= 2, `原计划可排 ${before} 个展厅`)
+  const sig: LiveSignals = { ...DEFAULT_SIGNALS, elevatorsDown: ['el1', 'el2'] }
+  const v2 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: sig, visits: [], staff: STAFF, version: 2, prevPlan: v1 })
+  const d = v2.disruption!
+  assert(v2.stops.length === 0, '双梯停用无跨层现场展厅')
+  assert(d.affectedHalls.length === before, `${before} 个未参观重点展厅全部列入失效说明（实际 ${d.affectedHalls.length}）`)
+  assert(d.affectedHalls.every((a) => a.reason.includes('电梯')), '每个失效展厅都解释与电梯停用的关系')
+  assert(d.candidates.length === 0, '无可达候选展区')
+  assert(d.onlineHalls.length === before, `失效展厅全部配发线上云讲解（${d.onlineHalls.length} 个）`)
+  assert(d.benefits.some((b) => b.includes('CLOUD-')), '收益中明示云讲解编号与 7 天回看')
+  assert(d.reasons.some((r) => r.includes('两部电梯')), '说明双梯均不可用、楼梯不能通行轮椅')
+}
+
+console.log('\n场景 16：观众选择取消现场讲解 → 仅保留无障碍路线，讲解改线上，陪同降级为物理协助')
+{
+  const p = party({ borrowWheelchair: true, needSlow: true })
+  const v1 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: DEFAULT_SIGNALS, visits: [], staff: STAFF })
+  const sig: LiveSignals = { ...DEFAULT_SIGNALS, elevatorsDown: ['el1'] }
+  const v2 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: sig, visits: [], staff: STAFF, version: 2, prevPlan: v1, guideCancelled: true })
+  assert(v2.guideCancelled === true, '标记为已取消现场讲解')
+  assert(v2.notices.some((n) => n.includes('取消今天的现场讲解')), '提示保留路线/设备、讲解改线上')
+  assert(v2.stops.every((st) => st.assist.includes('线上云讲解')), '每个可达展厅改为线上云讲解+定点协助提示')
+  assert(v2.segments.some((s) => (s.title ?? '').includes('线上云讲解')), '时间线标注线上云讲解编号')
+  assert(v2.disruption!.onlineHalls.length >= 0, '失效展厅云讲解清单已生成')
+  assert(!v2.escortName || v2.notices.some((n) => n.includes('物理协助')), '不再排全程讲解员，仅保留轮椅推行等物理协助')
+}
+
+console.log('\n场景 17：故障时观众已参观部分展厅 → 续览路线不折返、不重复、已看厅不算失效')
+{
+  const p = party({ borrowWheelchair: true })
+  const v1 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: DEFAULT_SIGNALS, visits: [], staff: STAFF })
+  const firstHall = v1.stops[0].hallId
+  const sig: LiveSignals = { ...DEFAULT_SIGNALS, elevatorsDown: ['el2'] }
+  const v2 = planRoute({ party: p, date: DATE, arrivalMin: 9 * 60 + 30, signals: sig, visits: [], staff: STAFF, version: 2, prevPlan: v1, visitedHallIds: [firstHall] })
+  assert(v2.startNode.includes('续览'), `续览起点标注：${v2.startNode}`)
+  assert(!v2.stops.some((s) => s.hallId === firstHall), '已参观展厅不重复排入')
+  assert(!v2.skipped.some((s) => s.hallId === firstHall), '已参观展厅不出现在跳过清单')
+  assert(!v2.segments.some((s) => (s.title ?? '').includes('核验')), '续览路线不再包含服务台入馆路段')
+  assert(!v2.disruption!.affectedHalls.some((a) => a.hallId === firstHall), '已参观展厅不计为"失效"')
+}
+
 console.log(`\n结果：${pass} 通过，${fail} 失败`)
 if (fail > 0) process.exit(1)

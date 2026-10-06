@@ -16,6 +16,8 @@ const CROWD_PRESETS = [
   { label: '过度拥挤 88%', value: 0.88 }
 ]
 
+const ELEVATOR_FAULT_REASONS = ['机械保护停机，工程部正在抢修', '门机故障，等待配件更换', '井道进水暂停使用', '例行安全检修临时停用']
+
 function signalsOf(global: ReturnType<typeof useStore.getState>['global'], lateMin = 0, unwell = false): LiveSignals {
   return { ...global, lateMin, visitorUnwell: unwell }
 }
@@ -42,10 +44,22 @@ export default function OpsPage() {
     const arr = s.global[key]
     const next = arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id]
     const cause =
-      key === 'elevatorsDown' ? (arr.includes(id) ? `${ELEVATORS.find((e) => e.id === id)?.name}恢复运行，路线恢复正常` : `${ELEVATORS.find((e) => e.id === id)?.name}临时故障，所有在馆/预约路线改走备用电梯`)
+      key === 'elevatorsDown' ? (arr.includes(id) ? `${ELEVATORS.find((e) => e.id === id)?.name}恢复运行，路线恢复正常` : `${ELEVATORS.find((e) => e.id === id)?.name}临时故障，所有在馆/已入馆观众的无障碍路线立即重算并推送处置选择`)
       : key === 'closedHalls' ? (arr.includes(id) ? `${HALLS.find((h) => h.id === id)?.name}重新开放` : `${HALLS.find((h) => h.id === id)?.name}临时闭馆，已从路线移除并调整接应`)
       : (arr.includes(id) ? `${STAFF.find((x) => x.id === id)?.name}取消请假回到岗位` : `${STAFF.find((x) => x.id === id)?.role}${STAFF.find((x) => x.id === id)?.name}临时请假，相关预约已自动改派人员`)
-    s.setGlobalSignals({ [key]: next }, cause)
+    if (key === 'elevatorsDown') {
+      const elevatorReasons = { ...s.global.elevatorReasons }
+      if (next.includes(id)) elevatorReasons[id] = ELEVATOR_FAULT_REASONS[0]
+      else delete elevatorReasons[id]
+      s.setGlobalSignals({ [key]: next, elevatorReasons }, cause)
+    } else {
+      s.setGlobalSignals({ [key]: next }, cause)
+    }
+  }
+
+  const setElevatorReason = (id: string, reason: string) => {
+    s.setGlobalSignals({ elevatorReasons: { ...s.global.elevatorReasons, [id]: reason } },
+      `${ELEVATORS.find((e) => e.id === id)?.name}故障原因更新为"${reason}"，观众端公示已同步`)
   }
 
   const setCrowd = (hallId: string, value: number) => {
@@ -55,13 +69,15 @@ export default function OpsPage() {
     s.setGlobalSignals({ crowdOverride }, value < 0 ? '取消人工拥挤度设定，恢复自动测算' : `人工设定${HALLS.find((h) => h.id === hallId)?.name}拥挤度，已据此避让/重排路线`)
   }
 
-  // —— 今日接应任务看板：展厅工作人员视角 ——
+  // —— 今日接应任务看板：展厅工作人员视角（已参观离厅的不再出现）——
   const etaBoard = todays
     .filter((v) => v.status !== 'cancelled' && v.route)
     .flatMap((v) =>
-      v.route!.stops.map((st) => ({
-        key: v.id + st.hallId, visit: v, hallId: st.hallId, arrive: st.arriveMin, leave: st.leaveMin, crowd: st.crowd, assist: st.assist
-      }))
+      v.route!.stops
+        .filter((st) => !(v.visitedHallIds ?? []).includes(st.hallId))
+        .map((st) => ({
+          key: v.id + st.hallId, visit: v, hallId: st.hallId, arrive: st.arriveMin, leave: st.leaveMin, crowd: st.crowd, assist: st.assist
+        }))
     )
     .sort((a, b) => a.arrive - b.arrive)
 
@@ -92,10 +108,18 @@ export default function OpsPage() {
           {ELEVATORS.map((e) => {
             const on = s.global.elevatorsDown.includes(e.id)
             return (
-              <button key={e.id} className={`ctrl-tile ${on ? 'on' : ''}`} onClick={() => toggleArr('elevatorsDown', e.id)}>
-                <div className="t">🛗 {e.name}<span>{on ? '点击恢复' : '点击设为故障'}</span></div>
-                <div className="d">{on ? '故障中：路线全部改走另一部电梯，无法到达的展厅自动跳过' : '运行中：跨层无障碍通行'}</div>
-              </button>
+              <div key={e.id} className={`ctrl-tile ${on ? 'on' : ''}`} style={{ cursor: 'default' }}>
+                <button className="t" onClick={() => toggleArr('elevatorsDown', e.id)} style={{ all: 'unset', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', gap: 8, width: '100%', fontWeight: 600, fontSize: '0.9rem' }}>
+                  🛗 {e.name}<span>{on ? '点击恢复' : '点击设为故障'}</span>
+                </button>
+                <div className="d">{on ? '故障中：在馆观众路线已重算，可替代展区/延误/推行需求已推送' : '运行中：跨层无障碍通行'}</div>
+                {on && (
+                  <select className="sm mt8" style={{ width: '100%' }} value={s.global.elevatorReasons[e.id] ?? ELEVATOR_FAULT_REASONS[0]}
+                    onChange={(ev) => setElevatorReason(e.id, ev.target.value)}>
+                    {ELEVATOR_FAULT_REASONS.map((r) => <option key={r} value={r}>公示原因：{r}</option>)}
+                  </select>
+                )}
+              </div>
             )
           })}
           {HALLS.map((h) => {
@@ -163,7 +187,8 @@ export default function OpsPage() {
               </div>
               <div className="flex mt8" style={{ gap: 8 }}>
                 <Badge tone={c.tone === 'bad' ? 'red' : c.tone === 'warn' ? 'amber' : 'green'}>拥挤 {Math.round(e.crowd * 100)}% · {c.text}</Badge>
-                {e.visit.route?.escortName && <Badge tone="blue">陪同：{e.visit.route.escortKind}{e.visit.route.escortName}</Badge>}
+                {e.visit.route?.escortName && !e.visit.route?.guideCancelled && <Badge tone="blue">陪同：{e.visit.route.escortKind}{e.visit.route.escortName}</Badge>}
+                {e.visit.route?.guideCancelled && <Badge tone="amber">📱 已改线上讲解（仅定点协助）</Badge>}
                 {(e.visit.party.usesWheelchair || e.visit.party.borrowWheelchair) && <Badge tone="gold">♿ 轮椅</Badge>}
                 {overdue && <Badge tone="red">已过时段未归档</Badge>}
                 <button className="btn sm ghost" onClick={() => setSelId(e.visit.id)}>打开该服务 →</button>
@@ -294,6 +319,68 @@ export default function OpsPage() {
                     onKeyDown={(e) => { if (e.key === 'Enter' && assistText.trim()) { s.recordAssist(visit.id, assistText.trim()); setAssistText('') } }} />
                   <button className="btn sm" disabled={!assistText.trim()} onClick={() => { s.recordAssist(visit.id, assistText.trim()); setAssistText('') }}>记录</button>
                 </div>
+
+                <hr className="divider" />
+                <h3>⑤ 现场参观进度（离厅即点，故障后自动续览重算）</h3>
+                {visit.route.stops.length === 0 && <p className="small muted">当前路线暂无现场展厅（可能双梯停用或已改线上讲解）。</p>}
+                <div className="flex" style={{ gap: 6 }}>
+                  {visit.route.stops.map((st) => {
+                    const done = (visit.visitedHallIds ?? []).includes(st.hallId)
+                    return (
+                      <button key={st.hallId} className={`btn sm ${done ? '' : 'ghost'}`}
+                        onClick={() => s.markHallVisited(visit.id, st.hallId, !done)}>
+                        {done ? '✅ ' : ''}{HALLS.find((h) => h.id === st.hallId)?.name.split(' · ')[1]}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {visit.route.disruption && (
+                  <>
+                    <hr className="divider" />
+                    <h3>⑥ 电梯故障处置（观众端已同步，服务台必须受理留痕）</h3>
+                    <Notice kind="warn">
+                      {visit.route.disruption.trigger}；重算结果：预计延误 <b>{Math.max(0, visit.route.disruption.delayMin)}</b> 分钟 ·
+                      步行 {visit.route.disruption.extraDistance >= 0 ? '+' : ''}{visit.route.disruption.extraDistance} 米 ·
+                      保留 {visit.route.disruption.keptHalls.length} 厅 ·
+                      {visit.route.disruption.needStaffPush ? '需安排工作人员推行' : '无需专门推行'}
+                    </Notice>
+                    {visit.recovery ? (
+                      <div className="notice ok">
+                        <span className="ic">📋</span>
+                        <div>
+                          <b>观众选择：
+                            {visit.recovery.choice === 'reorder' ? '调整参观顺序（按新路线继续）'
+                              : visit.recovery.choice === 'reschedule' ? `改期至 ${visit.recovery.note}`
+                              : '取消今日现场讲解（改线上云讲解）'}
+                          </b>
+                          <div className="small muted mt8">
+                            提交于 {new Date(visit.recovery.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })}
+                            {visit.recovery.handledBy ? <> · 已由 {visit.recovery.handledBy} 于 {new Date(visit.recovery.handledAt!).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} 受理</> : ' · 待受理'}
+                          </div>
+                          <div className="flex mt8" style={{ gap: 8 }}>
+                            {!visit.recovery.handledBy && <button className="btn sm" onClick={() => s.handleRecovery(visit.id, '值班主管')}>✅ 确认受理并告知观众</button>}
+                            {visit.recovery.choice === 'cancel_guide' && <button className="btn sm ghost" onClick={() => s.restoreGuide(visit.id)}>↩ 电梯恢复，恢复现场讲解</button>}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <p className="small muted">观众尚未在手机端做出选择，可当面协助其在 <Link to={`/visit/${visit.id}`}>观众端页面</Link> 操作；处置结果会自动保留在本服务记录。</p>
+                    )}
+                    {visit.originalDate && (
+                      <p className="small muted">📅 本服务由 {visit.originalDate} {fmtMin(visit.originalArrivalMin ?? visit.baseArrivalMin)} 改期而来，改期当日走快速入馆核验。</p>
+                    )}
+                  </>
+                )}
+
+                {visit.route.guideCancelled && !visit.route.disruption && (
+                  <>
+                    <hr className="divider" />
+                    <h3>⑥ 现场讲解已改为线上（电梯恢复后可一键复原）</h3>
+                    <Notice kind="info">该观众此前选择取消现场讲解；当前电梯已恢复运行，可恢复讲解排班并通知观众归队。</Notice>
+                    <button className="btn sm" onClick={() => s.restoreGuide(visit.id)}>↩ 恢复现场讲解并重新排班</button>
+                  </>
+                )}
 
                 <div className="mt12">
                   {visit.route.notices.map((n, i) => (

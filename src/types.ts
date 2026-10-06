@@ -38,6 +38,8 @@ export interface HallInfo {
   theme: string
   viewMin: number
   popularity: number
+  highlights: string[] // 重点展品（用于故障重算后说明"仍保留哪些重点展品"）
+  onlineCode?: string // 线上云讲解编号（现场无法到达时补充）
 }
 
 export interface ElevatorInfo {
@@ -59,6 +61,7 @@ export interface PartyProfile {
   needParking: boolean // 近距离（无障碍）车位
   canStandLong: boolean // 能否长时间站立
   extraCompanions?: number // 入馆当天临时增加的陪同人数
+  preferredHallIds?: string[] // 观众勾选的重点展厅（故障后优先保留、重排顺序）
 }
 
 export type EventType =
@@ -73,6 +76,42 @@ export type EventType =
   | 'incident'
   | 'complete'
   | 'note'
+  | 'recovery' // 电梯故障后观众处置选择（调整顺序/改期/取消讲解）与服务台受理
+
+/** 故障重算后观众的处置选择 */
+export type RecoveryChoice = 'reorder' | 'reschedule' | 'cancel_guide'
+
+export interface RecoveryDecision {
+  choice: RecoveryChoice
+  at: string // ISO
+  note?: string // 改期日期 / 取消讲解原因等
+  handledBy?: string // 服务台受理人
+  handledAt?: string
+}
+
+/** 故障导致的"展区失效"明细（对观众解释用） */
+export interface HallImpact {
+  hallId: string
+  reason: string // 失效原因（电梯停用/闭馆/拥挤/体力等）
+}
+
+/** 电梯故障路线重算分析：失效原因 × 新路线 × 参观收益 */
+export interface DisruptionInfo {
+  kind: 'elevator' | 'other'
+  trigger: string // 触发原因（人类可读），如"通往 F3 的 1 号客梯停用"
+  reasons: string[] // 失效原因清单（含绕行、楼层影响、拥挤变化）
+  affectedHalls: HallImpact[] // 相比上一版新失效的重点展厅
+  keptHalls: string[] // 新路线仍保留的重点展厅 id
+  substitutedHalls: Array<{ hallId: string; forHallId: string; reason: string }> // 可替代展区
+  candidates: Array<{ hallId: string; reason: string }> // 观众可勾选加入的可替代展区
+  delayMin: number // 预计延误（新路线结束时间 − 原计划结束时间；提前为负）
+  extraDistance: number // 新增步行距离（米；缩短为负）
+  needStaffPush: boolean // 是否需要工作人员全程/节点推行
+  pushReasons: string[] // 推行需求依据
+  benefits: string[] // 新参观收益：保留重点展品 / 缩短步行 / 线上讲解补充等
+  onlineHalls: string[] // 提供线上云讲解补充的失效展厅 id
+  prevVersion: number // 对比的上一版路线版本
+}
 
 export interface ServiceEvent {
   id: string
@@ -109,6 +148,7 @@ export interface HallStop {
   leaveMin: number
   crowd: number
   assist?: string
+  online?: boolean // 该展区以"线上云讲解"方式补充（无现场到达）
 }
 
 export interface SkippedHall {
@@ -141,6 +181,8 @@ export interface RoutePlan {
   wheelchairIssue?: string
   signals?: string // 生成路线时的现场信号快照，用于提示"情况已变化需重新规划"
   reduced?: boolean // 因身体不适等缩减
+  guideCancelled?: boolean // 观众选择"取消现场讲解"：仅保留无障碍到达路线，讲解改为线上云讲解
+  disruption?: DisruptionInfo // 相比上一版的故障重算分析（v1 或已恢复时为 undefined）
 }
 
 export interface Loan {
@@ -163,6 +205,13 @@ export interface Visit {
   events: ServiceEvent[]
   feedback?: string
   createdAt: string
+  // —— 电梯故障处置：观众决定与服务台受理（同一条服务留痕）——
+  recovery?: RecoveryDecision
+  recoveryAckAt?: string // 服务台已确认重算结果并主动告知观众
+  guideCancelled?: boolean // 观众选择"取消现场讲解"（可由服务台恢复）
+  visitedHallIds?: string[] // 故障发生时观众已参观完成的展厅（续览重算的起点）
+  originalDate?: string // 改期前原日期
+  originalArrivalMin?: number // 改期前原到馆时间
 }
 
 export interface Staff {

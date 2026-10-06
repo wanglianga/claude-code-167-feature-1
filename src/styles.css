@@ -290,6 +290,49 @@ textarea { min-height: 74px; resize: vertical; }
 .toast-note { font-size: .82rem; color: var(--ink-2); margin-top: 6px; }
 .divider { border: none; border-top: 1px dashed var(--line); margin: 12px 0; }
 .phone-frame-note { display: none; }
+
+/* —— 重点展厅多选 chip —— */
+.chip-btn {
+  border: 1.5px solid var(--line); background: #fff; color: var(--ink-2);
+  border-radius: 999px; padding: 6px 12px; font-size: 0.84rem; cursor: pointer;
+}
+.chip-btn:hover { border-color: #c9bfae; }
+.chip-btn.on { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-dark); font-weight: 600; }
+
+/* —— 电梯故障重算面板 —— */
+.recovery-card { border-color: #efc5be; box-shadow: 0 4px 18px rgba(180, 55, 42, 0.12); }
+.recovery-reasons { display: flex; flex-direction: column; gap: 6px; margin: 10px 0 4px; }
+.recovery-reason {
+  display: flex; gap: 8px; align-items: flex-start;
+  background: var(--red-soft); border: 1px solid #efc5be; border-radius: 10px;
+  padding: 8px 11px; font-size: 0.88rem; color: #7c261d;
+}
+.recovery-reason .ic { flex: none; }
+.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+@media (max-width: 760px) { .grid4 { grid-template-columns: repeat(2, 1fr); } }
+.recovery-stats { margin-top: 12px; }
+.green-text { color: var(--green); }
+.candidate-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  border: 1.5px solid var(--line); border-radius: 10px; padding: 9px 12px; margin-top: 8px;
+  background: #fff; cursor: pointer;
+}
+.candidate-row.on { border-color: var(--brand); background: var(--brand-soft); }
+.benefit-list { list-style: none; margin: 0; padding: 0; font-size: 0.9rem; }
+.benefit-list li { padding: 4px 0; color: #20552f; }
+.recovery-choice-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 760px) { .recovery-choice-grid { grid-template-columns: 1fr; } }
+.recovery-choice {
+  display: flex; flex-direction: column; align-items: flex-start; text-align: left;
+  border: 1.5px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fff;
+  color: var(--ink);
+}
+.recovery-choice b { font-size: 0.95rem; margin-bottom: 4px; }
+.recovery-choice span { font-size: 0.82rem; color: var(--ink-2); }
+.recovery-choice.primary { border-color: var(--brand); background: var(--brand-soft); cursor: pointer; }
+.recovery-choice.primary:hover { box-shadow: 0 0 0 3px var(--brand-soft); }
+.recovery-decided { margin-top: 10px; }
+.eta-card.visited { opacity: 0.62; border-left-color: var(--green); }
 @media (max-width: 560px) {
   .card { padding: 15px; }
   .hero { padding: 20px 18px; }

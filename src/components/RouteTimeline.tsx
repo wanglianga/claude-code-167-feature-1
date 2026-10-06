@@ -19,7 +19,8 @@ function segName(s: RouteSeg): string {
   return `${s.from} → ${s.to}`
 }
 
-export default function RouteTimeline({ plan }: { plan: RoutePlan }) {
+export default function RouteTimeline({ plan, visitedHallIds = [] }: { plan: RoutePlan; visitedHallIds?: string[] }) {
+  const visited = new Set(visitedHallIds)
   return (
     <div className="card">
       <div className="flex between">
@@ -74,10 +75,11 @@ export default function RouteTimeline({ plan }: { plan: RoutePlan }) {
             const h = HALLS.find((x) => x.id === st.hallId)!
             const c = crowdLabel(st.crowd)
             const color = c.tone === 'bad' ? '#b4372a' : c.tone === 'warn' ? '#b07a1c' : '#2e7d43'
+            const isVisited = visited.has(st.hallId)
             return (
-              <div key={st.hallId} className="eta-card">
+              <div key={st.hallId} className={`eta-card ${isVisited ? 'visited' : ''}`}>
                 <div className="flex between">
-                  <span className="t">{h.name}</span>
+                  <span className="t">{h.name}{isVisited && <Badge tone="green">✅ 已参观</Badge>}</span>
                   <span className="small">预计到达 <b style={{ fontSize: '1rem' }}>{fmtMin(st.arriveMin)}</b>（{fmtRange(st.arriveMin, st.leaveMin)}）</span>
                 </div>
                 <div className="flex mt8 small muted" style={{ gap: 12 }}>

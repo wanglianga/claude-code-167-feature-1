@@ -77,6 +77,18 @@ export default function HomePage() {
               {openLoan && <> · 已借轮椅 {openLoan.assetCode}</>}
               {v.route && v.route.version > 1 && <b className="danger-text"> · 已根据现场情况重规划</b>}
             </div>
+            {v.route?.disruption && (
+              v.recovery ? (
+                <div className="small mt8" style={{ color: 'var(--green)' }}>
+                  ✅ 电梯故障处置：您已选择{v.recovery.choice === 'reorder' ? '调整参观顺序' : v.recovery.choice === 'reschedule' ? '改期' : '改为线上讲解'}
+                  {v.recovery.handledBy ? '，服务台已受理' : '，等待服务台受理确认'}
+                </div>
+              ) : (
+                <div className="small mt8" style={{ color: 'var(--red)', fontWeight: 600 }}>
+                  🛗 通往重点展厅的电梯已停用，新路线与替代展区已算好，点此选择安排（调整顺序 / 改期 / 线上讲解）
+                </div>
+              )
+            )}
           </Link>
         )
       })}

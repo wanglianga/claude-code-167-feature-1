@@ -1,9 +1,10 @@
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useState } from 'react'
 import { useStore } from '../store'
-import { STAFF } from '../data/museum'
+import { STAFF, HALLS } from '../data/museum'
 import MuseumMap from '../components/MuseumMap'
 import RouteTimeline from '../components/RouteTimeline'
+import RouteRecoveryPanel from '../components/RouteRecoveryPanel'
 import { Badge, Notice, StatusBadge, EmptyHint } from '../components/ui'
 import { prettyDate, weekdayCN, fmtMin } from '../utils'
 import type { EventType } from '../types'
@@ -19,7 +20,8 @@ const EVENT_META: Record<EventType, { label: string; tone?: 'brand' | 'gold' | '
   assist: { label: '现场协助', tone: 'gold' },
   incident: { label: '突发情况', tone: 'red' },
   complete: { label: '参观结束', tone: 'brand' },
-  note: { label: '服务记录', tone: 'amber' }
+  note: { label: '服务记录', tone: 'amber' },
+  recovery: { label: '故障处置', tone: 'red' }
 }
 
 function ServiceLog({ visitId }: { visitId: string }) {
@@ -106,10 +108,28 @@ export default function VisitDetailPage() {
         {visit.route?.escortIssue && <Notice kind="warn">陪同排班提示：{visit.route.escortIssue}</Notice>}
         {visit.route?.wheelchairIssue && <Notice kind="warn">设备提示：{visit.route.wheelchairIssue}</Notice>}
         {visit.route?.parkingIssue && <Notice kind="warn">车位提示：{visit.route.parkingIssue}</Notice>}
+        {visit.route?.guideCancelled && (
+          <Notice kind="info">您已取消今日现场讲解：无障碍路线、轮椅与各楼层物理协助保留；未达展厅已改为线上云讲解（编号见下方）。需要恢复讲解可联系服务台。</Notice>
+        )}
         {planChanged && visit.status !== 'cancelled' && visit.status !== 'completed' && (
           <Notice kind="info">现场情况（电梯、闭馆、拥挤、排班）较预约时发生变化，当前展示的路线已由调度台按最新情况重新核算。</Notice>
         )}
       </div>
+
+      {/* —— 电梯故障后的路线重算：失效原因 × 新路线 × 参观收益 × 观众选择 —— */}
+      <RouteRecoveryPanel visit={visit} />
+
+      {(visit.visitedHallIds?.length ?? 0) > 0 && (
+        <div className="card">
+          <h2>✅ 今日参观进度 <Badge tone="green">{visit.visitedHallIds!.length} 个展区已完成</Badge></h2>
+          <div className="badges mt8">
+            {visit.visitedHallIds!.map((hid) => (
+              <Badge key={hid} tone="green">已参观：{HALLS.find((h) => h.id === hid)?.name.split(' · ')[1] ?? hid}</Badge>
+            ))}
+          </div>
+          <p className="small muted mt8" style={{ marginBottom: 0 }}>重算路线从最近完成的展区之后继续，不会让您折返重走；进度由各楼层工作人员在您离厅时同步。</p>
+        </div>
+      )}
 
       {visit.status === 'booked' && (
         <div className="card">
@@ -138,7 +158,7 @@ export default function VisitDetailPage() {
         <MuseumMap trace={visit.route.trace} elevatorsDown={global.elevatorsDown} closedHalls={global.closedHalls} crowd={crowdMap} />
       )}
 
-      {visit.route && <RouteTimeline plan={visit.route} />}
+      {visit.route && <RouteTimeline plan={visit.route} visitedHallIds={visit.visitedHallIds ?? []} />}
 
       <div className="card">
         <h2>入馆当天小贴士</h2>

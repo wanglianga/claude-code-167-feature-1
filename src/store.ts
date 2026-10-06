@@ -1,13 +1,14 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
-import { STAFF } from './data/museum'
+import { HALLS, STAFF } from './data/museum'
 import { planRoute } from './lib/planner'
 import type { LiveSignals } from './lib/planner'
-import type { EventType, PartyProfile, Visit } from './types'
-import { shortCode, todayISO, uid } from './utils'
+import type { EventType, PartyProfile, RecoveryChoice, Visit } from './types'
+import { fmtMin, shortCode, todayISO, uid } from './utils'
 
 export interface GlobalSignals {
   elevatorsDown: string[]
+  elevatorReasons: Record<string, string> // 故障电梯 → 对观众公示的停用原因
   closedHalls: string[]
   crowdOverride: Record<string, number>
   staffExtraLeave: string[]
@@ -16,6 +17,7 @@ export interface GlobalSignals {
 
 const DEFAULT_GLOBAL: GlobalSignals = {
   elevatorsDown: [],
+  elevatorReasons: {},
   closedHalls: [],
   crowdOverride: {},
   staffExtraLeave: [],
@@ -47,6 +49,11 @@ interface StoreState {
   setVisitSignals: (id: string, patch: Partial<VisitSignals>, cause: string) => void
   setExtraCompanions: (id: string, n: number) => void
   addFeedback: (id: string, text: string) => void
+  setPreferredHalls: (id: string, hallIds: string[]) => void
+  chooseRecovery: (id: string, choice: RecoveryChoice, note?: string) => void
+  handleRecovery: (id: string, by: string) => void
+  restoreGuide: (id: string) => void
+  markHallVisited: (id: string, hallId: string, visited: boolean) => void
   resetDemo: () => void
   seedDemo: () => void
 }
@@ -54,6 +61,7 @@ interface StoreState {
 function mergeSignals(global: GlobalSignals, vs?: VisitSignals): LiveSignals {
   return {
     elevatorsDown: global.elevatorsDown,
+    elevatorReasons: global.elevatorReasons,
     closedHalls: global.closedHalls,
     crowdOverride: global.crowdOverride,
     staffExtraLeave: global.staffExtraLeave,
@@ -61,6 +69,10 @@ function mergeSignals(global: GlobalSignals, vs?: VisitSignals): LiveSignals {
     lateMin: vs?.lateMin ?? 0,
     visitorUnwell: vs?.visitorUnwell ?? false
   }
+}
+
+function hallName(hallId: string): string {
+  return HALLS.find((h) => h.id === hallId)?.name ?? hallId
 }
 
 function addEvent(visit: Visit, type: EventType, text: string, actor = '系统'): Visit {
@@ -71,15 +83,26 @@ function addEvent(visit: Visit, type: EventType, text: string, actor = '系统')
 }
 
 function replanWithin(state: StoreState, visit: Visit, vs: VisitSignals | undefined, cause: string): Visit {
+  // 实时故障/续览分析只针对今日在场服务；未来日期的预约不携带"今日电梯故障"快照
+  const isToday = visit.date === todayISO()
+  // 已入馆并看过部分展厅、或电梯故障、或已取消讲解时启用"续览模式"（从已参观展厅之后继续）；
+  // 其余日常信号变化（迟到、拥挤、请假）仍重算完整路线，避免把未开始的入馆路段从页面抹掉
+  const resume = isToday && ((visit.visitedHallIds?.length ?? 0) > 0 || state.global.elevatorsDown.length > 0 || visit.guideCancelled === true)
+  const live = mergeSignals(state.global, vs)
+  // 非今日：电梯故障/临时闭馆/拥挤/请假等"今日实时信号"不叠加到未来预约
+  const signals: LiveSignals = isToday ? live : { ...live, elevatorsDown: [], elevatorReasons: {}, closedHalls: [], crowdOverride: {}, staffExtraLeave: [], lateMin: 0, visitorUnwell: false }
   const plan = planRoute({
     party: visit.party,
     date: visit.date,
     arrivalMin: visit.baseArrivalMin,
-    signals: mergeSignals(state.global, vs),
+    signals,
     visits: state.visits,
     staff: STAFF,
     selfId: visit.id,
-    version: visit.route ? visit.route.version + 1 : 1
+    version: visit.route ? visit.route.version + 1 : 1,
+    prevPlan: isToday ? visit.route : undefined,
+    visitedHallIds: resume ? visit.visitedHallIds : undefined,
+    guideCancelled: isToday ? visit.guideCancelled : false
   })
   let next: Visit = { ...visit, route: plan, escortId: plan.escortId }
   if (cause) next = addEvent(next, 'route_change', `路线 v${plan.version}：${cause}`, '调度台')
@@ -114,7 +137,7 @@ function emptyParty(): PartyProfile {
 
 export { emptyParty }
 
-const SEED_FLAG = 'museum_seed_v1'
+const SEED_FLAG = 'museum_seed_v2'
 
 export const useStore = create<StoreState>()(
   persist(
@@ -268,6 +291,118 @@ export const useStore = create<StoreState>()(
         }))
       },
 
+      setPreferredHalls: (id, hallIds) => {
+        get().updateBooking(id, { party: { preferredHallIds: hallIds } }, '观众勾选重点展厅/替代展区，已按"重点优先、少绕行"重新排定参观顺序')
+      },
+
+      chooseRecovery: (id, choice, note) => {
+        set((s) => {
+          const visitSignals = choice === 'reschedule'
+            ? { ...s.visitSignals, [id]: { lateMin: 0, visitorUnwell: false } }
+            : s.visitSignals
+          return {
+            visitSignals,
+            visits: s.visits.map((v) => {
+            if (v.id !== id) return v
+            const at = new Date().toISOString()
+            const decision = { choice, at, note }
+            let next: Visit = { ...v, recovery: decision }
+            const d = v.route?.disruption
+            if (choice === 'reorder') {
+              const wasGuideCancelled = v.guideCancelled === true
+              next.guideCancelled = false
+              next = addEvent(next, 'recovery',
+                `观众选择【调整参观顺序】：接受重算路线 v${v.route?.version}（${d ? `保留 ${d.keptHalls.length} 个原计划展厅、预计延误 ${Math.max(0, d.delayMin)} 分钟` : ''}），服务台保留该处理结果`, '观众')
+              // 从此前"取消讲解"改回现场讲解时，需要重算恢复排班；单纯接受当前方案则不再升版本
+              if (wasGuideCancelled) {
+                next = replanWithin({ ...s, visits: s.visits, visitSignals }, next, visitSignals[id], '观众改选调整参观顺序：恢复现场讲解与接应排班')
+              }
+            } else if (choice === 'reschedule') {
+              const newDate = note ?? todayISO()
+              next.originalDate = v.originalDate ?? v.date
+              next.originalArrivalMin = v.originalArrivalMin ?? v.baseArrivalMin
+              next.visitedHallIds = []
+              next.guideCancelled = false
+              // 改期离馆：在借轮椅/设备一并归还入库，避免占用改期日库存
+              const openLoans = v.loans.filter((l) => l.loanedAt && !l.returnedAt)
+              if (openLoans.length > 0) {
+                next.loans = v.loans.map((l) => (l.loanedAt && !l.returnedAt ? { ...l, returnedAt: new Date().toISOString() } : l))
+                next = addEvent(next, 'wheelchair_return', `观众改期离馆，在借轮椅 ${openLoans.map((l) => l.assetCode).join('、')} 由服务台收回检查入库`, '服务台')
+              }
+              // 改期视为新一天的预约：按设备恢复正常生成干净路线（不带今日故障/拥挤快照）
+              const cleanSignals: LiveSignals = {
+                ...mergeSignals({ ...s.global, elevatorsDown: [], elevatorReasons: {}, closedHalls: [], crowdOverride: {} }),
+                lateMin: 0, visitorUnwell: false
+              }
+              const plan = planRoute({
+                party: v.party, date: newDate, arrivalMin: v.baseArrivalMin,
+                signals: cleanSignals,
+                visits: s.visits, staff: STAFF, selfId: v.id,
+                version: v.route ? v.route.version + 1 : 1
+              })
+              next = { ...next, date: newDate, status: 'booked', route: plan, escortId: plan.escortId }
+              next = addEvent(next, 'recovery',
+                `观众选择【改期】：原 ${next.originalDate} ${fmtMin(next.originalArrivalMin!)} 的讲解改约至 ${newDate} ${fmtMin(v.baseArrivalMin)}；今日已看展厅与线上讲解码保留在服务记录中，改期当日可快速入馆`, '观众')
+            } else {
+              next.guideCancelled = true
+              next = addEvent(next, 'recovery',
+                '观众选择【取消今日现场讲解】：保留无障碍路线、轮椅与协助服务，未能到达的展厅改发线上云讲解（7 天内可回看），服务台已保留处理结果', '观众')
+              next = replanWithin({ ...s, visits: s.visits, visitSignals }, next, visitSignals[id], '按观众选择取消现场讲解并重算：仅保留无障碍到达路线，讲解改为线上云讲解')
+            }
+            return next
+          })
+        }})
+      },
+
+      handleRecovery: (id, by) => {
+        set((s) => ({
+          visits: s.visits.map((v) => {
+            if (v.id !== id || !v.recovery) return v
+            const handledAt = new Date().toISOString()
+            let next: Visit = {
+              ...v,
+              recoveryAckAt: handledAt,
+              recovery: { ...v.recovery, handledBy: by, handledAt }
+            }
+            const label = v.recovery.choice === 'reorder' ? '调整参观顺序' : v.recovery.choice === 'reschedule' ? '改期' : '取消现场讲解'
+            next = addEvent(next, 'recovery', `服务台${by}已受理观众【${label}】选择：确认新路线/线上讲解码/接应安排并当面（或电话）告知观众`, '服务台')
+            return next
+          })
+        }))
+      },
+
+      restoreGuide: (id) => {
+        set((s) => ({
+          visits: s.visits.map((v) => {
+            if (v.id !== id) return v
+            let next: Visit = { ...v, guideCancelled: false }
+            next = addEvent(next, 'escort_assign', '电梯恢复运行，服务台为观众恢复现场讲解并重新排班陪同', '服务台')
+            return replanWithin({ ...s, visits: s.visits }, next, s.visitSignals[id], '电梯恢复：恢复现场讲解与接应排班')
+          })
+        }))
+      },
+
+      markHallVisited: (id, hallId, visited) => {
+        set((s) => ({
+          visits: s.visits.map((v) => {
+            if (v.id !== id) return v
+            const cur = new Set(v.visitedHallIds ?? [])
+            if (visited) cur.add(hallId); else cur.delete(hallId)
+            const visitedHallIds = Array.from(cur)
+            let next: Visit = { ...v, visitedHallIds }
+            if (visited) {
+              next = addEvent(next, 'assist', `现场进度：观众已完成 ${hallName(hallId)} 参观并离开`, '展厅工作人员')
+            }
+            // 故障/取消讲解处置期间：进度变化即以最新进度为续览起点重算剩余路线
+            if (s.global.elevatorsDown.length > 0 || v.guideCancelled) {
+              next = replanWithin({ ...s, visits: s.visits }, next, s.visitSignals[id],
+                visited ? `观众已离厅，续览路线从 ${hallName(hallId)} 之后重新计算` : '工作人员撤销离厅标记，剩余路线重新纳入该展厅')
+            }
+            return next
+          })
+        }))
+      },
+
       resetDemo: () => {
         localStorage.removeItem(SEED_FLAG)
         set({ visits: [], global: DEFAULT_GLOBAL, visitSignals: {} })
@@ -313,7 +448,8 @@ export const useStore = create<StoreState>()(
       }
     }),
     {
-      name: 'museum-access-visit-v1',
+      name: 'museum-access-visit-v2',
+      version: 2,
       partialize: (s) => ({ visits: s.visits, global: s.global, visitSignals: s.visitSignals }),
       onRehydrateStorage: () => (state) => {
         state?.seedDemo()

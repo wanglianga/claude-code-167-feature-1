@@ -1,12 +1,13 @@
 import { EDGES, ELEVATORS, HALLS, HALL_FLOOR_STAFF_CAPACITY, HOURS, NODES, TOTAL_PARKING, TOTAL_WHEELCHAIRS } from '../data/museum'
 import type {
-  Edge, Floor, GraphNode, HallInfo, HallStop, PartyProfile, RoutePlan, RouteSeg, Staff, Visit
+  DisruptionInfo, Edge, Floor, GraphNode, HallImpact, HallInfo, HallStop, PartyProfile, RoutePlan, RouteSeg, Staff, Visit
 } from '../types'
 import { fmtMin, uid } from '../utils'
 
 // —— 现场实时信号（工作人员可调整）——
 export interface LiveSignals {
   elevatorsDown: string[] // 故障电梯 id
+  elevatorReasons?: Record<string, string> // 故障电梯 id → 停用原因（对观众公示）
   closedHalls: string[] // 临时闭展 hall id
   crowdOverride: Record<string, number> // 人工设定的拥挤度 0..1
   staffExtraLeave: string[] // 临时请假 staff id
@@ -130,6 +131,9 @@ interface PlanCtx {
   walkBudget: number
   notices: string[]
   floorOccupancy: Map<string, number> // floor-window → 已有接应组数
+  visitedSet: Set<string> // 故障发生时已参观完成的展厅（续览时不再重排）
+  preferredSet: Set<string> // 观众标记的重点展厅（优先保留）
+  guideCancelled: boolean // 已取消现场讲解：无现场讲解的展厅不排入
 }
 
 type EndpointMeta = { node: string; stay: number; title: string; toilet?: string; rest?: string }
@@ -336,6 +340,172 @@ export interface PlanInput {
   staff: Staff[]
   selfId?: string
   version?: number
+  prevPlan?: RoutePlan // 上一版路线（故障/处置重算时传入，用于对比分析）
+  visitedHallIds?: string[] // 故障发生时已参观完成的展厅（续览从该厅之后继续）
+  guideCancelled?: boolean // 观众已选择取消现场讲解
+}
+
+const hallShort = (id: string): string => {
+  const n = hallMap.get(id)?.name ?? id
+  return n.split(' · ')[1] ?? n
+}
+
+/** 对比新旧两版路线，生成对观众公示的"失效原因 + 新参观收益"分析 */
+function buildDisruption(
+  prev: RoutePlan,
+  next: RoutePlan,
+  signals: LiveSignals,
+  party: PartyProfile,
+  visitedSet: Set<string>,
+  adj: Map<string, Adj[]>
+): DisruptionInfo | undefined {
+  if (signals.elevatorsDown.length === 0) return undefined
+  const preferredSet = new Set(party.preferredHallIds ?? [])
+  const now = new Date()
+  const at = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+
+  // —— 触发原因与失效说明 ——
+  const downNames = signals.elevatorsDown.map((id) => ELEVATORS.find((e) => e.id === id)?.name ?? id)
+  const allDown = signals.elevatorsDown.length >= ELEVATORS.length
+  const trigger = allDown
+    ? `通往 B1/F2/F3 重点展厅的两部电梯于 ${at} 先后停用`
+    : `通往重点展厅的${downNames.join('、')}于 ${at} 临时停用`
+
+  const reasons: string[] = []
+  for (const id of signals.elevatorsDown) {
+    const ev = ELEVATORS.find((e) => e.id === id)!
+    const why = signals.elevatorReasons?.[id] ?? '机械保护停机，工程部正在抢修'
+    reasons.push(`${ev.name}因"${why}"停用，预计抢修 30–60 分钟，恢复时间将第一时间推送`)
+  }
+  if (allDown) {
+    reasons.push('两部电梯均不可用期间，跨层（B1/F2/F3）暂不具备无障碍通行条件；楼梯仅作疏散使用，轮椅与推车无法通过')
+  } else {
+    const other = ELEVATORS.find((e) => !signals.elevatorsDown.includes(e.id))!
+    reasons.push(`去往各楼层统一改乘${other.name}并由工作人员协助挡门、进出；绕行会增加步行与候梯时间，但全程仍为无障碍通道`)
+  }
+
+  // —— 展区影响 ——
+  const prevIds = prev.stops.map((s) => s.hallId).filter((id) => !visitedSet.has(id))
+  const newIds = next.stops.map((s) => s.hallId)
+  const newSet = new Set(newIds)
+  const skipReasonMap = new Map(next.skipped.map((s) => [s.hallId, s.reason]))
+
+  const affectedHalls: HallImpact[] = []
+  for (const id of prevIds) {
+    if (newSet.has(id)) continue
+    let reason = skipReasonMap.get(id)
+    if (!reason) {
+      reason = signals.elevatorsDown.length >= ELEVATORS.length
+        ? '两部电梯均停用，暂不具备无障碍到达条件'
+        : `绕行备用电梯后，按当前体力与闭馆时间已无法从容排入`
+    }
+    if (next.guideCancelled) reason = `观众选择取消现场讲解：${reason}，改发线上云讲解`
+    affectedHalls.push({ hallId: id, reason })
+  }
+  // 观众标记为重点但原本未排入、现在仍不可达的展厅也一并说明
+  for (const id of party.preferredHallIds ?? []) {
+    if (newSet.has(id) || visitedSet.has(id) || affectedHalls.some((a) => a.hallId === id)) continue
+    affectedHalls.push({ hallId: id, reason: skipReasonMap.get(id) ?? '电梯停用绕行后本时段暂无法安排' })
+  }
+
+  const keptHalls = newIds.filter((id) => preferredSet.has(id) || prevIds.includes(id))
+
+  // —— 可替代展区（新进入路线的同楼层展厅）——
+  const substitutedHalls: DisruptionInfo['substitutedHalls'] = []
+  for (const id of newIds) {
+    if (prevIds.includes(id) || visitedSet.has(id)) continue
+    const victim = affectedHalls.find((a) => HALL_FLOOR[a.hallId] === HALL_FLOOR[id])
+    substitutedHalls.push({
+      hallId: id,
+      forHallId: victim?.hallId ?? affectedHalls[0]?.hallId ?? id,
+      reason: victim ? `同楼层替代展区，无需再跨层绕行` : `备用电梯即可到达，当前客流宽松`
+    })
+  }
+
+  // —— 观众可再勾选的候选展区 ——
+  const candidates: DisruptionInfo['candidates'] = []
+  for (const h of HALLS) {
+    const id = h.id
+    if (newSet.has(id) || visitedSet.has(id) || signals.closedHalls.includes(id)) continue
+    if (affectedHalls.some((a) => a.hallId === id)) continue
+    const reachable = dijkstra(adj, 'desk', id) !== null
+    if (!reachable) continue
+    const crowd = crowdAt(id, next.arrivalMin, signals.crowdOverride)
+    if (crowd >= 0.8) continue
+    candidates.push({
+      hallId: id,
+      reason: `${HALL_FLOOR[id] < 0 ? 'B1' : 'F' + HALL_FLOOR[id]} 同层可到达 · 当前拥挤度约 ${Math.round(crowd * 100)}% · 重点展品：${h.highlights[0]}`
+    })
+  }
+  candidates.sort((a, b) => (preferredSet.has(b.hallId) ? 1 : 0) - (preferredSet.has(a.hallId) ? 1 : 0))
+
+  // —— 延误与步行变化（续览时仅比较"剩余路线"）——
+  let prevRemainingDist = prev.totalDistance
+  if (visitedSet.size > 0) {
+    const visitedStops = prev.stops.filter((s) => visitedSet.has(s.hallId))
+    const lastVisited = visitedStops[visitedStops.length - 1]
+    if (lastVisited) {
+      const idx = prev.segments.findIndex((s) => s.distance === 0 && s.from === hallMap.get(lastVisited.hallId)?.name)
+      prevRemainingDist = idx >= 0 ? prev.segments.slice(idx + 1).reduce((n, s) => n + s.distance, 0) : prev.totalDistance
+    }
+  }
+  const delayMin = Math.round(next.endMin - prev.endMin)
+  const extraDistance = next.totalDistance - prevRemainingDist
+
+  // —— 是否需要工作人员推行 ——
+  const pushReasons: string[] = []
+  const usesChair = party.usesWheelchair || party.borrowWheelchair
+  const steepRamps = next.segments.filter((s) => s.kind === 'ramp' && (s.maxSlope ?? 0) >= 6).length
+  if (usesChair && steepRamps > 0) pushReasons.push(`新路线含 ${steepRamps} 段坡度 ≥6% 的坡道，轮椅自行上坡困难`)
+  if (usesChair && extraDistance > 120) pushReasons.push(`绕行备用电梯比原路线多走约 ${extraDistance} 米`)
+  if (usesChair && next.stops.length > 0) pushReasons.push('备用电梯候梯厅与展厅入口之间安排工作人员接应推行')
+  const needStaffPush = pushReasons.length > 0
+
+  // —— 线上讲解补充：本次确实无法到达的展厅 ——
+  const candidateIds = new Set(candidates.map((c) => c.hallId))
+  const lostIds = affectedHalls.map((a) => a.hallId).filter((id) => !newSet.has(id))
+  const onlineHalls = next.guideCancelled
+    ? Array.from(new Set([...lostIds, ...(party.preferredHallIds ?? [])]))
+        .filter((id) => !newSet.has(id) && !visitedSet.has(id))
+    : lostIds.filter((id) => !visitedSet.has(id) && !candidateIds.has(id))
+
+  // —— 新参观收益 ——
+  const benefits: string[] = []
+  if (keptHalls.length > 0) {
+    const first = hallMap.get(keptHalls[0])!
+    benefits.push(`重点内容保留：仍可现场参观 ${keptHalls.length} 个原计划展厅（如${hallShort(keptHalls[0])}的「${first.highlights[0]}」），核心展品没有因故障取消`)
+  }
+  if (substitutedHalls.length > 0) {
+    const s = substitutedHalls[0]
+    const h = hallMap.get(s.hallId)!
+    benefits.push(`改看同楼层${hallShort(s.hallId)}：少走折返路，也能看到「${h.highlights[0]}」等重点展品`)
+  }
+  if (extraDistance < -20) benefits.push(`新顺序少走约 ${Math.abs(extraDistance)} 米，把体力留给重点展品`)
+  if (delayMin <= 0) benefits.push('按新的参观顺序可在原计划时间内结束，不额外延误')
+  else benefits.push(`预计仅延误约 ${delayMin} 分钟（含候梯与绕行），各节点接应已同步顺延`)
+  if (onlineHalls.length > 0) {
+    const codes = onlineHalls.map((id) => hallMap.get(id)?.onlineCode).filter(Boolean).join('、')
+    benefits.push(`${onlineHalls.length} 个本次无法到达的展厅已开通线上云讲解（${codes}），7 天内可随时回看，改期再到馆可免预约走快速入馆`)
+  }
+  if (needStaffPush) benefits.push('已在备用电梯口与坡道安排工作人员接应推行，无需观众自行用力')
+  if (benefits.length === 0) benefits.push('服务台已保留本次处置结果，可选择调整顺序、改期或改为线上讲解，不会被简单当作"取消服务"')
+
+  return {
+    kind: 'elevator',
+    trigger,
+    reasons,
+    affectedHalls,
+    keptHalls,
+    substitutedHalls,
+    candidates: candidates.slice(0, 4),
+    delayMin,
+    extraDistance,
+    needStaffPush,
+    pushReasons,
+    benefits,
+    onlineHalls,
+    prevVersion: prev.version
+  }
 }
 
 export function planRoute(input: PlanInput): RoutePlan {
@@ -349,15 +519,21 @@ export function planRoute(input: PlanInput): RoutePlan {
   const speed = usesChair ? 48 : party.needSlow || party.hasElder ? 42 : 60
   const walkBudget = signals.visitorUnwell ? 350 : usesChair ? 2400 : lowStamina ? 700 : 1500
 
+  const visitedSet = new Set(input.visitedHallIds ?? [])
+  const preferredSet = new Set(party.preferredHallIds ?? [])
+  const guideCancelled = input.guideCancelled ?? false
+
   const ctx: PlanCtx = {
     adj, party, signals, speed, lowStamina, usesChair, walkBudget, notices,
-    floorOccupancy: new Map()
+    floorOccupancy: new Map(),
+    visitedSet, preferredSet, guideCancelled
   }
 
-  // 已有预约对楼层接应能力的占用
+  // 已有预约对楼层接应能力的占用（已参观的展厅不再占用接应位）
   for (const v of visits) {
     if (v.id === selfId || v.date !== input.date || v.status === 'cancelled' || !v.route) continue
     for (const st of v.route.stops) {
+      if (st.online) continue
       const f = HALL_FLOOR[st.hallId]
       const key = `${f}:${Math.floor(st.arriveMin / 30)}`
       ctx.floorOccupancy.set(key, (ctx.floorOccupancy.get(key) ?? 0) + 1)
@@ -395,11 +571,17 @@ export function planRoute(input: PlanInput): RoutePlan {
     }
   }
 
-  // —— 电梯故障提示 ——
+  // —— 电梯故障提示（公示停用原因与抢修预期，避免观众误以为服务被随意取消）——
   for (const id of signals.elevatorsDown) {
     const ev = ELEVATORS.find((e) => e.id === id)!
     const other = ELEVATORS.find((e) => e.id !== id)
-    notices.push(`⚠ ${ev.name}临时故障，全程改走${other?.name ?? '备用通道'}，部分展厅可能需要绕行`)
+    const why = signals.elevatorReasons?.[id] ?? '机械保护停机，工程部抢修中'
+    notices.push(signals.elevatorsDown.length >= ELEVATORS.length
+      ? `⚠ ${ev.name}临时故障（${why}）：两部电梯均不可用，已暂停跨层展厅安排，转为同层参观/线上讲解/改期方案`
+      : `⚠ ${ev.name}临时故障（${why}）：全程改走${other?.name ?? '备用通道'}，工作人员协助候梯与推行，部分展厅需绕行`)
+  }
+  if (guideCancelled) {
+    notices.push('ℹ 您已选择取消今天的现场讲解：无障碍到达路线与设备服务保留，未能到达的展厅改为线上云讲解，服务台已同步受理')
   }
 
   const segs: RouteSeg[] = []
@@ -409,9 +591,21 @@ export function planRoute(input: PlanInput): RoutePlan {
   let t = arrivalMin
   let walkUsed = 0
 
-  // 起点：停车场 → 坡道入口 → 服务台
+  // 起点：续览（故障时观众已到馆并看过部分展厅）时从最后一个已参观展厅继续；
+  // 否则从停车场 → 坡道入口 → 服务台
   let curNode = 'entrance'
-  if (party.needParking) {
+  const resumeHallId = (() => {
+    if (visitedSet.size === 0) return undefined
+    const inPlan = input.prevPlan?.stops.map((s) => s.hallId) ?? []
+    const visited = inPlan.filter((id) => visitedSet.has(id))
+    return visited[visited.length - 1]
+  })()
+  if (resumeHallId) {
+    curNode = resumeHallId
+    const doneNames = input.prevPlan!.stops.filter((s) => visitedSet.has(s.hallId)).map((s) => hallShort(s.hallId)).join('、')
+    notices.push(`ℹ 您已完成 ${doneNames} 的参观，重算路线从${hallShort(resumeHallId)}之后继续，已参观部分不再重复安排`)
+    t = Math.max(t, input.prevPlan!.stops.find((s) => s.hallId === resumeHallId)!.leaveMin)
+  } else if (party.needParking) {
     const leg = pathLeg(ctx, 'parking', 'entrance', t)
     if (!leg) {
       notices.push('⚠ 停车场通道暂不可用，请由正门落客区进入')
@@ -419,26 +613,31 @@ export function planRoute(input: PlanInput): RoutePlan {
       segs.push(...leg.segs); trace.push(...leg.edgeIds); t = leg.t; walkUsed += leg.dist
     }
   }
-  const checkinStay = 10 + (party.borrowWheelchair && availW > 0 ? 5 : 0)
-  const inLeg = pathLeg(ctx, curNode, 'desk', t, [
-    { node: 'desk', stay: checkinStay, title: '服务台核验预约、安检与设备发放' }
-  ])
-  if (inLeg) {
-    const last = inLeg.segs[inLeg.segs.length - 1]
-    if (last) {
-      last.assist = `服务台核验预约${party.borrowWheelchair && availW > 0 ? '、借出轮椅并调试刹车脚踏' : ''}${party.needParking ? '、登记车位' : ''}`
+  if (!resumeHallId) {
+    const checkinStay = 10 + (party.borrowWheelchair && availW > 0 ? 5 : 0)
+    const inLeg = pathLeg(ctx, curNode, 'desk', t, [
+      { node: 'desk', stay: checkinStay, title: '服务台核验预约、安检与设备发放' }
+    ])
+    if (inLeg) {
+      const last = inLeg.segs[inLeg.segs.length - 1]
+      if (last) {
+        last.assist = `服务台核验预约${party.borrowWheelchair && availW > 0 ? '、借出轮椅并调试刹车脚踏' : ''}${party.needParking ? '、登记车位' : ''}`
+      }
+      segs.push(...inLeg.segs); trace.push(...inLeg.edgeIds); t = inLeg.t; walkUsed += inLeg.dist
+      curNode = 'desk'
     }
-    segs.push(...inLeg.segs); trace.push(...inLeg.edgeIds); t = inLeg.t; walkUsed += inLeg.dist
-    curNode = 'desk'
   }
 
-  // —— 展厅选择：按楼层从低到高；带儿童优先自然馆 ——
+  // —— 展厅选择：观众勾选的重点展厅最优先，其次按楼层从低到高；带儿童优先自然馆 ——
   const maxHalls = signals.visitorUnwell ? 2 : lowStamina ? 3 : 6
-  const order = party.hasChild ? ['hF', 'hA', 'hB', 'hC', 'hD', 'hE'] : ['hA', 'hB', 'hC', 'hD', 'hE', 'hF']
+  const baseOrder = party.hasChild ? ['hF', 'hA', 'hB', 'hC', 'hD', 'hE'] : ['hA', 'hB', 'hC', 'hD', 'hE', 'hF']
+  const preferredOrder = (party.preferredHallIds ?? []).filter((id) => baseOrder.includes(id))
+  const order = [...preferredOrder, ...baseOrder.filter((id) => !preferredOrder.includes(id))]
   let hallsDone = 0
   let lastToilet = t
 
   for (const hallId of order) {
+    if (visitedSet.has(hallId)) continue
     if (hallsDone >= maxHalls) { skipped.push({ hallId, reason: '体力/时间预算有限，本次从容参观部分展厅，余下展厅欢迎下次再来' }); continue }
     if (signals.closedHalls.includes(hallId)) { skipped.push({ hallId, reason: '该展区临时闭馆（维护/布展）' }); continue }
     const crowdNow0 = crowdAt(hallId, t, signals.crowdOverride)
@@ -514,15 +713,22 @@ export function planRoute(input: PlanInput): RoutePlan {
       arriveMin: arriveHall,
       leaveMin: Math.round(t),
       crowd: Math.round(crowd * 100) / 100,
-      assist: `${f < 0 ? 'B1' : 'F' + f} 展厅工作人员在${hinfo.name.split(' · ')[0]}入口接应（预计 ${fmtMin(arriveHall)} 到达）${crowd >= 0.6 ? '；现场较拥挤，协助从无障碍观展位进入' : ''}`
+      assist: guideCancelled
+        ? `已取消现场讲解：建议在${hinfo.name.split(' · ')[0]}使用线上云讲解（${hinfo.onlineCode}）+ 自助讲解器自由参观，展厅工作人员可提供定点协助`
+        : `${f < 0 ? 'B1' : 'F' + f} 展厅工作人员在${hinfo.name.split(' · ')[0]}入口接应（预计 ${fmtMin(arriveHall)} 到达）${crowd >= 0.6 ? '；现场较拥挤，协助从无障碍观展位进入' : ''}`
     })
-    ctx.floorOccupancy.set(winKey, (ctx.floorOccupancy.get(winKey) ?? 0) + 1)
+    // 取消现场讲解后不再占用楼层定时接应岗（仅保留定点协助）
+    if (!guideCancelled) ctx.floorOccupancy.set(winKey, (ctx.floorOccupancy.get(winKey) ?? 0) + 1)
     segs.push({
       id: uid('seg'), from: hinfo.name, to: hinfo.name, via: [],
       kind: 'flat', distance: 0, walkMin: viewMin, arriveMin: Math.round(t),
       stayMin: viewMin,
-      title: `参观讲解${party.needSign ? '（手语）' : party.needSlow ? '（慢速）' : ''}`,
-      warning: crowd >= 0.6 ? `展厅拥挤度 ${Math.round(crowd * 100)}%，讲解员控制节奏、安排休息座椅` : undefined
+      title: guideCancelled
+        ? `线上云讲解 + 自助参观（${hinfo.onlineCode}）`
+        : `参观讲解${party.needSign ? '（手语）' : party.needSlow ? '（慢速）' : ''}`,
+      warning: guideCancelled
+        ? `线上云讲解编号 ${hinfo.onlineCode}，7 天内可回看；需要帮助可找本层工作人员`
+        : crowd >= 0.6 ? `展厅拥挤度 ${Math.round(crowd * 100)}%，讲解员控制节奏、安排休息座椅` : undefined
     })
     curNode = hallId
     hallsDone += 1
@@ -549,16 +755,31 @@ export function planRoute(input: PlanInput): RoutePlan {
   }
 
   // —— 讲解员 / 志愿者排班 ——
-  const escort = pickEscort(party, input.date, arrivalMin, Math.round(t), staff, visits, signals, selfId)
-  if (escort.id) notices.push(`陪同安排：${escort.kind}${escort.name}（${fmtMin(arrivalMin)}–${fmtMin(Math.round(t))} 全程陪同）`)
+  // 取消现场讲解后：不再排全程讲解员；轮椅/坡道/电梯的物理协助仍安排志愿者
+  let escort: ReturnType<typeof pickEscort>
+  if (guideCancelled) {
+    escort = usesChair
+      ? pickEscort({ ...party, needSign: false, needSlow: false }, input.date, arrivalMin, Math.round(t), staff, visits, signals, selfId)
+      : {}
+    if (escort.id) notices.push(`陪同安排：现场讲解已改为线上云讲解；${escort.kind}${escort.name}仅在电梯口/坡道提供轮椅推行等物理协助`)
+  } else {
+    escort = pickEscort(party, input.date, arrivalMin, Math.round(t), staff, visits, signals, selfId)
+    if (escort.id) notices.push(`陪同安排：${escort.kind}${escort.name}（${fmtMin(arrivalMin)}–${fmtMin(Math.round(t))} 全程陪同）`)
+  }
   if (escort.issue) notices.push('⚠ ' + escort.issue)
 
   const totalWalkMin = segs.reduce((n, s) => n + s.walkMin, 0)
+  const disruption = input.prevPlan
+    ? buildDisruption(input.prevPlan, {
+        version, stops, skipped, segments: segs, arrivalMin: Math.round(arrivalMin), endMin: Math.round(t),
+        totalDistance: Math.round(walkUsed), guideCancelled
+      } as RoutePlan, signals, party, visitedSet, adj)
+    : undefined
   return {
     version,
     generatedAt: new Date().toISOString(),
     arrivalMin: Math.round(arrivalMin),
-    startNode: party.needParking ? '无障碍停车场' : '馆前无障碍坡道入口',
+    startNode: resumeHallId ? `续览起点：${hallMap.get(resumeHallId)!.name}` : party.needParking ? '无障碍停车场' : '馆前无障碍坡道入口',
     endNode: '一层咨询服务台',
     segments: segs,
     stops,
@@ -578,6 +799,8 @@ export function planRoute(input: PlanInput): RoutePlan {
     wheelchairNeeded: party.borrowWheelchair,
     wheelchairIssue,
     signals: signalSnapshot(signals),
-    reduced: signals.visitorUnwell
+    reduced: signals.visitorUnwell,
+    guideCancelled,
+    disruption
   }
 }
